@@ -1,0 +1,11 @@
+# env file
+.env
+
+# UV 
+uv.lock
+
+# pyenv
+.python-version
+
+# virtual environment
+.venv/
