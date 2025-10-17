@@ -1,121 +1,254 @@
-# Self‑Evaluating AI Chat Assistant (Agentic Demo)
+# 🤖 AI Assistant with Function Tools + Pushover Notifications
 
-This project is an **agentic AI** notebook that shows how to make a chat assistant **generate → evaluate → revise** its own answers. It does this by pairing a *writer* model with a *judge* model and using **typed structured outputs** (via Pydantic) to control the feedback loop.
+This project builds an **interactive AI assistant** that represents a specific person (in this case, *Ypatios Chaniotakos*) and can **take real-world actions** — like recording user interest or saving unanswered questions — by calling external *tools* (functions).  
 
----
-
-## ✨ What you’ll see
-
-- **Generator** (writer): produces a first reply using `gpt-4o-mini`.
-- **Evaluator** (judge): returns a strict, typed verdict:
-  ```py
-  class Evaluation(BaseModel):
-      is_acceptable: bool
-      feedback: str
-  ```
-  Thanks to the OpenAI SDK’s `chat.completions.parse(...)`, the model’s output is parsed **directly into this Pydantic object** — no manual JSON parsing.
-- **Rerun** (fixer): if the evaluator says ❌, we **automatically re-prompt** the generator with the feedback and return the corrected answer.
-
-A tiny **Gradio** UI wires everything into a runnable chat.
+It also integrates with **Pushover** to send **mobile push notifications** whenever one of these tools is used.
 
 ---
 
-## 🧠 Why the “patent → Pig Latin” trick?
+## 🚀 Overview
 
-The notebook includes a deliberate test hook:
+The system is an **agentic AI chatbot** that runs locally with a Gradio chat interface.  
 
-```py
-if "patent" in message:
-    system = system_prompt + """
+It uses:
+- **OpenAI’s function calling (tools)** feature
+- **JSON schemas** to describe function arguments
+- **Pushover API** to send real-time mobile notifications
 
-Everything in your reply needs to be in pig latin - 
-          it is mandatory that you respond only and entirely in pig latin""" 
+---
+
+## 🧠 Architecture Summary
+
+| Component | Purpose |
+|------------|----------|
+| **OpenAI Chat Model (`gpt-4o-mini`)** | Handles the dialogue and decides when to call tools. |
+| **Function Tools** | Let the model execute predefined Python functions (e.g., record user details). |
+| **Pushover API** | Sends push notifications when tools are triggered. |
+| **Gradio UI** | Provides an interactive chat interface in your browser. |
+| **PDF + Summary files** | Provide biographical context for Ypatios Chaniotakos. |
+
+---
+
+## 🔔 Setting Up Pushover
+
+To receive mobile notifications from your assistant:
+
+1. Go to **[https://pushover.net/](https://pushover.net/)**  
+   Create a free account and download the Pushover app on your phone (iOS or Android).
+
+2. In your Pushover dashboard, find:
+   - **User Key**
+   - **API Token / Key**
+   - **API Endpoint URL** (usually `https://api.pushover.net/1/messages.json`)
+
+3. Create a `.env` file in the project root with:
+   ```bash
+   PUSHOVER_USER="your_user_key"
+   PUSHOVER_TOKEN="your_api_token"
+   PUSHOVER_URL="https://api.pushover.net/1/messages.json"
+   OPENAI_API_KEY="your_openai_api_key"
+   ```
+
+4. The assistant will now send push notifications every time it:
+   - Records a user’s contact details.
+   - Logs an unknown or unanswered question.
+
+---
+
+## ⚙️ How Tools Work
+
+OpenAI’s **tools** feature (also known as *function calling*) lets the model **decide when to call real Python functions** — and what arguments to pass.
+
+### 🔩 Defining Tools
+
+Each tool is declared as a JSON schema describing:
+- The function’s **name**
+- A **description**
+- The **parameter structure**
+
+Example:
+
+```python
+record_user_details_json = {
+    "name": "record_user_details",
+    "description": "Record that a user provided contact details.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "email": {"type": "string"},
+            "name": {"type": "string"},
+            "notes": {"type": "string"}
+        },
+        "required": ["email"]
+    }
+}
 ```
 
-- When the user’s message contains **“patent”**, we *force* a low‑quality reply (Pig Latin).
-- The **evaluator** should flag that as unacceptable and provide actionable feedback.
-- The **rerun** uses that feedback to produce a clean, professional answer.
+These JSON schemas are collected into a list:
 
-This gives you a reliable way to *see the evaluation loop in action* during demos, instead of waiting for a natural failure.
+```python
+tools = [
+    {"type": "function", "function": record_user_details_json},
+    {"type": "function", "function": record_unknown_question_json},
+]
+```
 
-> Don’t want the demo behavior? Delete the `if "patent"` block — everything else still works.
+This list is passed to the model in the chat call:
+
+```python
+response = openai.chat.completions.create(
+    model="gpt-4o-mini",
+    messages=messages,
+    tools=tools
+)
+```
 
 ---
 
-## 🧩 How it works (flow)
+## 🧰 The Available Tools
 
-1. **Build system context**  
-   The assistant is instructed to act as a specific persona (from a résumé/LinkedIn summary you load in the notebook). This goes into the system prompt so replies are on‑brand and grounded.
+### 1. `record_user_details(email, name, notes)`
+Used when a user shares contact details or interest.  
+It triggers a **Pushover notification** and returns confirmation.
 
-2. **Generate a first draft**
-   ```py
-   response = openai.chat.completions.create(
-       model="gpt-4o-mini",
-       messages=[{"role":"system","content":system_prompt}, *history, {"role":"user","content":message}],
-   )
-   reply = response.choices[0].message.content
+```python
+def record_user_details(email, name="Name not provided", notes="Not provided"):
+    push(f"Recording interest from {name} with email {email} and notes: {notes}")
+    return {"recorded": "ok"}
+```
+
+### 2. `record_unknown_question(question)`
+Used when the AI can’t answer a question.  
+It logs the question via **Pushover** and returns confirmation.
+
+```python
+def record_unknown_question(question):
+    push(f"Recording {question} asked that I couldn't answer")
+    return {"recorded": "ok"}
+```
+
+---
+
+## 🧩 Handling Tool Calls
+
+When the assistant decides a tool should be called, the OpenAI response includes a **`tool_calls`** section.  
+
+The class method `handle_tool_call` manages this:
+
+```python
+def handle_tool_call(self, tool_calls):
+    results = []
+    for tool_call in tool_calls:
+        tool_name = tool_call.function.name
+        arguments = json.loads(tool_call.function.arguments)
+        tool = globals().get(tool_name)
+        result = tool(**arguments) if tool else {}
+        results.append({
+            "role": "tool",
+            "content": json.dumps(result),
+            "tool_call_id": tool_call.id
+        })
+    return results
+```
+
+Essentially:
+1. The AI says “I want to call `record_user_details` with `{email: ..., name: ...}`.”
+2. The handler looks up the function by name.
+3. Executes it with the provided arguments.
+4. Appends the tool’s output back into the chat context.
+5. The model continues the conversation, now aware of the tool’s result.
+
+---
+
+## 💬 Chat Loop Logic
+
+```python
+while not done:
+    response = openai.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=messages,
+        tools=tools
+    )
+    if response.choices[0].finish_reason == "tool_calls":
+        tool_calls = response.choices[0].message.tool_calls
+        results = self.handle_tool_call(tool_calls)
+        messages.append(response.choices[0].message)
+        messages.extend(results)
+    else:
+        done = True
+```
+
+This loop continues until the assistant is finished responding — even if it had to call multiple tools in sequence.
+
+---
+
+## 🧠 System Prompt (Persona Setup)
+
+The assistant acts as **Ypatios Chaniotakos**, using their résumé and summary files for grounding:
+
+```
+You are acting as Ypatios Chaniotakos...
+If you don't know the answer, use the record_unknown_question tool.
+If the user provides contact info, use record_user_details.
+```
+
+This ensures that tool usage feels natural — like a real professional assistant managing contact inquiries.
+
+---
+
+## 🖥️ Running the Assistant
+
+1. Install dependencies:
+   ```bash
+   pip install openai gradio python-dotenv pypdf requests
    ```
 
-3. **Evaluate the draft (structured)**
-   ```py
-   from pydantic import BaseModel
+2. Set up your `.env` file (see Pushover setup above).
 
-   class Evaluation(BaseModel):
-       is_acceptable: bool
-       feedback: str
-
-   evaluation = client.chat.completions.parse(
-       model="gpt-4o-mini",
-       messages=[
-         {"role":"system","content":evaluator_system_prompt},
-         {"role":"user","content":evaluator_user_prompt(reply, message, history)}
-       ],
-       response_format=Evaluation,
-       temperature=0.1,
-   ).choices[0].message.parsed
+3. Run the assistant:
+   ```bash
+   python me_with_tools.py
    ```
 
-4. **Gate + Rerun if needed**
-   ```py
-   if evaluation.is_acceptable:
-       return reply
-   else:
-       improved = rerun(reply, message, history, evaluation.feedback)
-       return improved
-   ```
+4. Open the Gradio web UI in your browser (it will print a localhost URL).
 
-5. **UI**  
-   A small **Gradio** `ChatInterface` function calls `chat(...)` and streams replies.
+5. Chat naturally — try saying things like:
+   - “Here’s my email, please contact me.”
+   - “I have a question about quantum computing.”
+
+   You’ll get push notifications when tools trigger!
 
 ---
 
-## 🧱 Key files (as used in the notebook)
+## 📲 Example Push Notifications
 
-- `me_with_evaluation.ipynb` — the full demo notebook (chat, evaluator, rerun, UI).
-- `me/summary.txt` — short bio/persona summary used for grounding.
-- `me/bio.pdf` — profile text loaded to enrich the system prompt.
-
-> If you’re adapting this to your own profile, replace the files in `me/` and keep the same loading logic.
-
----
-
-## 🛠️ Rerun strategy (prompting pattern)
-
-`rerun(...)` augments the generator’s system prompt with:
-- The **failed reply** (verbatim)
-- The **evaluator’s feedback** (verbatim)
-- A short instruction: *“Revise the reply to satisfy the feedback exactly; don’t repeat the same mistakes; keep persona and constraints.”*
-
-This “critique → revise” loop is the backbone of many **agentic** systems.
+```
+Pushing notification: Recording interest from John Doe with email john@example.com and notes: Interested in collaboration.
+Pushing notification: Recording What is your favorite food? asked that I couldn't answer
+```
 
 ---
 
-## 🧪 Quick demo steps
+## ✅ Summary of Concepts
 
-1. Launch the notebook.
-2. Ask a normal question — expect a solid reply.
-3. Ask something with the word **“patent”** — assistant will try to talk in pig Latin.
-4. See the evaluator flag it as not acceptable answer providing a feedback as well and rerun the process.
+| Concept | Description |
+|----------|--------------|
+| **Tool definition** | Describes what functions the model can call (in JSON schema). |
+| **Tool call** | The model’s structured request to execute a function. |
+| **Handler** | Code that executes the function, returns output to the model. |
+| **Pushover integration** | Sends real-time mobile alerts when tools are triggered. |
 
 ---
 
+## 🧭 Next Steps
+
+- Add more tools (e.g., `schedule_meeting`, `fetch_portfolio_link`).
+- Extend `record_user_details` to save data to a database.
+- Improve push notification messages with timestamps or structured summaries.
+- Combine with an **evaluator agent** for self-quality checks.
+
+---
+
+**Author:** Ypatios Chaniotakos  
+**Date:** October 2025  
+**Project:** AI Assistant with Function Tools & Pushover Notifications
