@@ -33,7 +33,7 @@ def call_model(state: State):
     return {"messages": response}
 
 # Determine whether to end or summarize the conversation
-def should_continue(state: State) -> Literal["summarize_conversation", "__end__"]:
+def should_continue(state: State) -> Literal["summarize_conversation", END]:
     
     """Return the next node to execute."""
     
@@ -69,7 +69,7 @@ def summarize_conversation(state: State):
     response = model.invoke(messages)
     
     # Delete all but the 2 most recent messages and add our summary to the state 
-    delete_messages = [RemoveMessage(id=m.id) for m in state["messages"][:-2]]
+    delete_messages = [RemoveMessage(id=m.id) for m in state["messages"][:-2] if m.id]
     return {"summary": response.content, "messages": delete_messages}
 
 # Define a new graph
